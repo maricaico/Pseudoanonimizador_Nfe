@@ -1,0 +1,17 @@
+# XMLs utilizados no processamento
+xmls_originais/
+xmls_pseudonimizados/
+
+# Cache do Python
+__pycache__/
+*.pyc
+
+# Arquivos de ambiente
+.env
+.venv/
+venv/
+
+# Arquivos do sistema/editor
+.DS_Store
+Thumbs.db
+.vscode/
