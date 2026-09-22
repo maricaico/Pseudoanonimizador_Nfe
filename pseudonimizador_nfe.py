@@ -493,6 +493,107 @@ def fake_nome_fantasia(
 
 
 # ============================================================
+# PRODUTOS / NCM
+# ============================================================
+
+def fake_nome_produto(
+    key: str,
+    original: str
+) -> str:
+    """Gera um identificador determinístico para o nome do produto."""
+
+    codigo = fake_numeric(
+        key,
+        "xProd",
+        original,
+        10
+    )
+
+    return f"Produto {codigo}"
+
+
+def fake_ncm(
+    key: str,
+    original: str
+) -> str:
+    """Pseudonimiza o NCM preservando formato numérico de 8 dígitos."""
+
+    return fake_numeric(
+        key,
+        "NCM",
+        original,
+        8
+    )
+
+
+def _dv_gtin(corpo: str) -> int:
+    """Calcula o dígito verificador de um GTIN a partir do corpo sem o DV."""
+
+    total = 0
+    peso = 3
+
+    for digito in reversed(corpo):
+        total += int(digito) * peso
+        peso = 1 if peso == 3 else 3
+
+    return (10 - (total % 10)) % 10
+
+
+def fake_codigo_barras(
+    key: str,
+    original: str
+) -> str:
+    """
+    Pseudonimiza códigos de barras de forma determinística.
+
+    - Preserva o literal SEM GTIN.
+    - Para códigos numéricos com tamanho de GTIN (8, 12, 13 ou 14),
+      gera um GTIN sintético com dígito verificador válido.
+    - Para outros códigos de barras, preserva o comprimento e o tipo
+      geral do conteúdo (numérico ou alfanumérico).
+    """
+
+    valor = (original or "").strip()
+
+    if valor.upper() == "SEM GTIN":
+        return "SEM GTIN"
+
+    if valor.isdigit() and len(valor) in {8, 12, 13, 14}:
+
+        corpo = fake_numeric(
+            key,
+            "COD_BARRAS_GTIN",
+            valor,
+            len(valor) - 1
+        )
+
+        return corpo + str(_dv_gtin(corpo))
+
+    if valor.isdigit():
+
+        return fake_numeric(
+            key,
+            "COD_BARRAS_NUM",
+            valor,
+            len(valor)
+        )
+
+    alfabeto = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+    return "".join(
+        alfabeto[
+            _hmac_index(
+                key,
+                f"COD_BARRAS_ALFA:{i}",
+                valor,
+                len(alfabeto)
+            )
+        ]
+        for i in range(len(valor))
+    )
+
+
+# ============================================================
 # VALIDAÇÃO DE CPF
 # ============================================================
 
@@ -805,7 +906,96 @@ def _pseudonimizar_pessoa(
 
 
 # ============================================================
-# SANITIZAÇÃO DE TEXTOS
+# PSEUDONIMIZAÇÃO DE PRODUTOS
+# ============================================================
+
+def _pseudonimizar_produtos(
+    root,
+    key: str,
+    cache: dict,
+    stats: dict
+) -> None:
+
+    for prod in root.findall(f".//{q('det')}/{q('prod')}"):
+
+        xprod = prod.find(q("xProd"))
+
+        if (
+            xprod is not None
+            and (xprod.text or "").strip()
+        ):
+            original = xprod.text.strip()
+
+            xprod.text = cache.setdefault(
+                ("xProd", original),
+                fake_nome_produto(
+                    key,
+                    original
+                )
+            )
+
+            stats["produtos"] += 1
+
+        ncm = prod.find(q("NCM"))
+
+        if (
+            ncm is not None
+            and (ncm.text or "").strip()
+        ):
+            original = ncm.text.strip()
+
+            ncm.text = cache.setdefault(
+                ("NCM", original),
+                fake_ncm(
+                    key,
+                    original
+                )
+            )
+
+            stats["NCM"] += 1
+
+        # ----------------------------------------------------
+        # Códigos de barras do produto.
+        # cEAN/cEANTrib representam GTIN; cBarra/cBarraTrib
+        # podem conter outros padrões de código de barras.
+        # Se a tag não existir ou estiver vazia, nada é alterado.
+        # O código interno do produto (cProd), quantidades e
+        # valores permanecem exatamente como no XML original.
+        # ----------------------------------------------------
+
+        for tag_codigo_barras in (
+            "cEAN",
+            "cEANTrib",
+            "cBarra",
+            "cBarraTrib"
+        ):
+
+            codigo_barras = prod.find(
+                q(tag_codigo_barras)
+            )
+
+            if (
+                codigo_barras is None
+                or not (codigo_barras.text or "").strip()
+            ):
+                continue
+
+            original = codigo_barras.text.strip()
+
+            if original.upper() == "SEM GTIN":
+                continue
+
+            codigo_barras.text = cache.setdefault(
+                ("COD_BARRAS", original),
+                fake_codigo_barras(
+                    key,
+                    original
+                )
+            )
+
+            stats["codigos_barras"] += 1
+
+
 # ============================================================
 # SANITIZAÇÃO DE TEXTOS
 # ============================================================
@@ -976,6 +1166,9 @@ def pseudonimizar_xml(
         "contato": 0,
         "observacoes": 0,
         "referencias": 0,
+        "produtos": 0,
+        "NCM": 0,
+        "codigos_barras": 0,
     }
 
     # ========================================================
@@ -1198,6 +1391,7 @@ def pseudonimizar_xml(
 
     _pseudonimizar_inscricoes(root, key, cache, stats)
     _pseudonimizar_referencias_nfe(root, key, cache, stats)
+    _pseudonimizar_produtos(root, key, cache, stats)
 
     _sanitizar_textos(
         root,
